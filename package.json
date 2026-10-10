@@ -1,0 +1,29 @@
+{
+  "name": "levik-extension",
+  "version": "1.0.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests scripts",
+    "test": "vitest run",
+    "test:browser": "node scripts/browser-test.mjs",
+    "package": "npm run build && node scripts/package.mjs",
+    "store:assets": "node scripts/store-assets.mjs",
+    "store:showcase": "node scripts/showcase-assets.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.0",
+    "@types/node": "^24.0.0",
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "typescript-eslint": "^8.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0",
+    "sharp": "^0.34.0",
+    "playwright": "^1.55.0"
+  }
+}
