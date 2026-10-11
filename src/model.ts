@@ -1,3 +1,4 @@
+import {serviceHosts} from './serviceEndpoints';
 export type Language = 'en' | 'ru';
 export type Mode = 'full' | 'smart';
 export type Region = 'europe' | 'americas' | 'asia' | 'other';
@@ -36,7 +37,7 @@ export function makePac(preferences:Preferences,endpoint:Endpoint):string {
   // Match local names and IP literals without resolving public hostnames locally.
   // No DNS lookups and no DIRECT fallback for proxied destinations.
   const localBypass=`var ip=host.replace(/^\\[|\\]$/g,"");if(ip==="::1"||ip==="0:0:0:0:0:0:0:1"||/^(?:fc|fd)[0-9a-f]{2}:|^fe[89ab][0-9a-f]:/.test(ip))return "DIRECT";if(host.indexOf(":")===-1&&(host.indexOf(".")===-1||host.slice(-10)===".localhost"))return "DIRECT";if(/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host)){var parts=host.split(".").map(Number);if(parts.every(function(n){return n<=255;})&&(parts[0]===127||parts[0]===10||parts[0]===172&&parts[1]>=16&&parts[1]<=31||parts[0]===192&&parts[1]===168||parts[0]===169&&parts[1]===254))return "DIRECT";}`;
-  return `function FindProxyForURL(url,host){host=host.toLowerCase().replace(/\\.$/,"");${localBypass}if(host==="leviknet.com"||host==="sub.leviknet.com"||host==="leviknet.org"||host==="api.leviknet.org"||host==="sub.leviknet.org"||host==="${endpoint.host}")return "DIRECT";var proxy=${JSON.stringify(`HTTPS ${endpoint.host}:${endpoint.port}`)};if(host==="example.com")return proxy;var domains=${JSON.stringify(domains)};var russianZones=${JSON.stringify(RUSSIAN_DOMAIN_ZONES)};var match=function(items){return items.some(function(d){return host===d||host.slice(-(d.length+1))==="."+d;});};return ${preferences.mode==='full'?'proxy':'match(russianZones)||match(domains)?"DIRECT":proxy'};}`;
+  return `function FindProxyForURL(url,host){host=host.toLowerCase().replace(/\\.$/,"");${localBypass}var service=${JSON.stringify([...serviceHosts(),endpoint.host])};if(service.indexOf(host)!==-1)return "DIRECT";var proxy=${JSON.stringify(`HTTPS ${endpoint.host}:${endpoint.port}`)};if(host==="example.com")return proxy;var domains=${JSON.stringify(domains)};var russianZones=${JSON.stringify(RUSSIAN_DOMAIN_ZONES)};var match=function(items){return items.some(function(d){return host===d||host.slice(-(d.length+1))==="."+d;});};return ${preferences.mode==='full'?'proxy':'match(russianZones)||match(domains)?"DIRECT":proxy'};}`;
 }
 export function publicState(state:State):PublicState {
   const {session}=state;

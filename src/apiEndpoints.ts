@@ -1,4 +1,4 @@
-const ORIGINS = ['https://api.leviknet.org', 'https://leviknet.org', 'https://leviknet.com'] as const;
+import {refreshEndpoints, serviceEndpoints} from './serviceEndpoints';
 
 export class ApiEndpoints {
   private selected: string | null = null;
@@ -9,12 +9,22 @@ export class ApiEndpoints {
 
   async resolve(): Promise<string> {
     if (this.selected && Date.now() < this.verifiedUntil) return this.selected;
-    if (!this.pending) this.pending = this.probe().finally(() => { this.pending = null; });
+    if (!this.pending) this.pending = this.probeWithRefresh().finally(() => { this.pending = null; });
     return this.pending;
   }
 
+  /** When every known host fails, a newer signed document may name working ones. */
+  private async probeWithRefresh(): Promise<string> {
+    try {
+      return await this.probe();
+    } catch (error) {
+      if (!await refreshEndpoints(60000)) throw error;
+      return this.probe();
+    }
+  }
+
   private async probe(): Promise<string> {
-    for (const origin of ORIGINS) {
+    for (const origin of serviceEndpoints().apiOrigins) {
       try {
         // Discover availability without credentials. Never replay a possibly completed POST.
         const response = await fetch(`${origin}/api/extension/v1/health`, {
@@ -30,14 +40,14 @@ export class ApiEndpoints {
         this.selected = `${origin}/api/extension/v1`;
         this.verifiedUntil = Date.now() + 60000;
         return this.selected;
-      } catch { /* Only the built-in trusted HTTPS origins are considered. */ }
+      } catch { /* Only signed or built-in HTTPS origins are considered. */ }
     }
     throw new Error('serviceError');
   }
 }
 
 export async function fetchInventory(): Promise<unknown> {
-  for (const origin of ['https://sub.leviknet.org', 'https://sub.leviknet.com:2095']) {
+  for (const origin of [...serviceEndpoints().subscriptionOrigins, 'https://sub.leviknet.com:2095']) {
     try {
       const response = await fetch(`${origin}/levik-status/extension/runtime-xray`, {
         cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(10000),

@@ -1,5 +1,6 @@
 import {defaults,emptyTraffic,makePac,normalizeDomain,publicState,remaining,validateEndpoint,type State,type Session,type Preferences,type TrafficTotal} from './model';
 import {ApiEndpoints,fetchInventory} from './apiEndpoints';
+import {loadEndpoints,refreshEndpointsIfDue,websiteOrigins} from './serviceEndpoints';
 import {liveLocations,reconcileLocations} from './locations';
 const endpoints = new ApiEndpoints();
 let state: State = {locations:[],preferences:{...defaults},session:null,connected:false,connectedAt:null,traffic:emptyTraffic(),trafficBaseline:null,error:null,trialUsed:false};
@@ -10,6 +11,8 @@ const validBytes=(value:unknown):value is number=>typeof value==='number'&&Numbe
 function serial<T>(fn:()=>Promise<T>):Promise<T> {const next=queue.then(fn);queue=next.catch(()=>{});return next;}
 const ready=(async()=>{
   await chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});
+  // Signed hosts from the last run first, so a blocked domain is not even tried.
+  await loadEndpoints();
   const stored=await chrome.storage.local.get(['state']);
   if(stored.state) state=stored.state as State; // Only the trusted worker writes this versioned local state.
   else state.preferences.language=chrome.i18n.getUILanguage().startsWith('ru')?'ru':'en';
@@ -146,7 +149,7 @@ async function handle(message:unknown){
       if(m.consent!==true)throw new Error('consentRequired');
       const pairing=object(await request('/pair/start',{intent:m.type,consent:true,language:state.preferences.language}));
       if(typeof pairing.requestId!=='string'||typeof pairing.pollToken!=='string'||typeof pairing.expiresAt!=='number'||!Number.isFinite(pairing.expiresAt)||pairing.expiresAt<=Date.now()||typeof pairing.verificationUri!=='string')throw new Error('serviceError');
-      const uri=new URL(pairing.verificationUri);if(!['https://leviknet.com','https://leviknet.org'].includes(uri.origin)||uri.username||uri.password||uri.pathname!=='/login')throw new Error('serviceError');
+      const uri=new URL(pairing.verificationUri);if(!websiteOrigins().has(uri.origin)||uri.username||uri.password||uri.pathname!=='/login')throw new Error('serviceError');
       state.pairing={requestId:pairing.requestId,pollToken:pairing.pollToken,expiresAt:pairing.expiresAt,verificationUri:pairing.verificationUri};
       await persist();schedulePairingPoll();await chrome.tabs.create({url:pairing.verificationUri});break;
     }
@@ -185,7 +188,7 @@ chrome.webRequest.onErrorOccurred.addListener(d=>attempts.delete(d.requestId),{u
 // other fatal proxy/configuration errors still surface a connection warning.
 chrome.proxy.onProxyError.addListener(details=>{if(details.fatal&&details.error!=='net::ERR_TUNNEL_CONNECTION_FAILED')void serial(async()=>{await ready;if(state.connected){await disconnect();state.error='connectionError';await persist();}});});
 chrome.proxy.settings.onChange.addListener(details=>{if(details.levelOfControl!=='controlled_by_this_extension')void serial(async()=>{await ready;if(state.connected){state.connected=false;state.connectedAt=null;state.traffic=emptyTraffic();state.trafficBaseline=null;state.error='proxyConflict';await persist();}});});
-chrome.alarms.onAlarm.addListener(()=>{void serial(async()=>{
+chrome.alarms.onAlarm.addListener(()=>{void ready.then(()=>refreshEndpointsIfDue()).catch(()=>{});void serial(async()=>{
   await ready;
   // The existing alarm also resumes polling if Chrome suspended the service worker.
   await pollPairingAutomatically();
