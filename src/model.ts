@@ -1,4 +1,5 @@
 import {serviceHosts} from './serviceEndpoints';
+import type {Announcement} from './remoteConfig';
 export type Language = 'en' | 'ru';
 export type Mode = 'full' | 'smart';
 export type Region = 'europe' | 'americas' | 'asia' | 'other';
@@ -9,7 +10,7 @@ export interface Preferences { language: Language; locationId: string; mode: Mod
 export interface Traffic { uploadedBytes: number; downloadedBytes: number }
 export interface TrafficTotal extends Traffic { epoch: string }
 export interface State { locations: Location[]; preferences: Preferences; session: Session | null; connected: boolean; connectedAt: number | null; traffic: Traffic; trafficBaseline: TrafficTotal | null; error: string | null; trialUsed: boolean; pairing?: {requestId:string;pollToken:string;expiresAt:number;verificationUri:string} | null }
-export type PublicState = Omit<State,'session'|'pairing'|'trafficBaseline'> & {session: Omit<Session,'token' | 'endpoint'> | null; pairing?: {expiresAt:number;verificationUri:string}|null};
+export type PublicState = Omit<State,'session'|'pairing'|'trafficBaseline'> & {session: Omit<Session,'token' | 'endpoint'> | null; pairing?: {expiresAt:number;verificationUri:string}|null; announcements?: Announcement[]};
 export const defaults: Preferences = {language:'en',locationId:'',mode:'full',ruleMode:'include',domains:[],autoConnect:false,webRtc:true};
 export const emptyTraffic=():Traffic=>({uploadedBytes:0,downloadedBytes:0});
 const RUSSIAN_DOMAIN_ZONES=['ru','su','xn--p1ai','xn--p1acf','moscow','xn--80adxhks','tatar'];

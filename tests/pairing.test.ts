@@ -6,7 +6,7 @@ type MessageListener=(message:unknown,sender:chrome.runtime.MessageSender,respon
 const onMessage=vi.fn<(listener:MessageListener)=>void>();
 const onAlarm=vi.fn<(listener:()=>void)=>void>();
 const onProxyError=vi.fn<(listener:(details:{fatal:boolean;error:string})=>void)=>void>();
-const persist=vi.fn<(value:{state:State})=>Promise<void>>();
+const persist=vi.fn<(value:{state?:State})=>Promise<void>>();
 const proxyClear=vi.fn((_options:unknown,callback:()=>void)=>callback());
 const fetchMock=vi.fn<typeof fetch>();
 const pairing={requestId:'request-fixture',pollToken:'poll-secret-fixture',expiresAt:Date.now()+300000,verificationUri:'https://leviknet.com/login?next=%2Fdashboard%2Faccount-extension'};
@@ -26,14 +26,14 @@ beforeEach(()=>{
   vi.resetModules();vi.useFakeTimers();vi.clearAllMocks();
   stored={locations:[],preferences:{...defaults},session:null,connected:false,connectedAt:null,traffic:emptyTraffic(),trafficBaseline:null,error:null,trialUsed:false};
   pollResult={pending:true};pollFails=false;
-  persist.mockImplementation(async value=>{stored=structuredClone(value.state);});
+  persist.mockImplementation(async value=>{if(value.state)stored=structuredClone(value.state);});
   const event={addListener:vi.fn()};
   const clear=vi.fn((_options:unknown,callback:()=>void)=>callback());
   vi.stubGlobal('chrome',{
-    storage:{local:{setAccessLevel:vi.fn(),get:vi.fn(async()=>({state:stored})),set:persist}},
+    storage:{local:{setAccessLevel:vi.fn(),get:vi.fn(async()=>({state:stored})),set:persist,remove:vi.fn()}},
     i18n:{getUILanguage:()=> 'en'},alarms:{create:vi.fn(),onAlarm:{addListener:onAlarm}},
     action:{setBadgeText:vi.fn(),setBadgeBackgroundColor:vi.fn()},
-    runtime:{id:'fixture',getURL:(path:string)=>extensionUrl+path,onMessage:{addListener:onMessage},onStartup:event},
+    runtime:{id:'fixture',getManifest:()=>({version:'1.0.7'}),getURL:(path:string)=>extensionUrl+path,onMessage:{addListener:onMessage},onStartup:event},
     tabs:{create:vi.fn()},proxy:{settings:{clear:proxyClear,get:(_options:unknown,callback:(value:unknown)=>void)=>callback({levelOfControl:'controlled_by_this_extension'}),onChange:event},onProxyError:{addListener:onProxyError}},
     privacy:{network:{webRTCIPHandlingPolicy:{clear}}},
     webRequest:{onAuthRequired:event,onCompleted:event,onErrorOccurred:event}
@@ -41,6 +41,7 @@ beforeEach(()=>{
   fetchMock.mockImplementation(async url=>{
     const path=String(url);
     if(path.endsWith('/health'))return Response.json({ok:true});
+    if(path.endsWith('/api/app/v1/config'))return Response.json({ok:true,refreshAfterSeconds:900,flags:{},announcements:[]});
     if(path.endsWith('/pair/poll')){if(pollFails)throw new Error('Network unavailable');return Response.json(pollResult);}
     if(path.endsWith('/pair/start'))return Response.json({...pairing,expiresAt:Date.now()+300000});
     if(path.endsWith('/runtime-xray'))return Response.json({scope:'levik-runtime-xray',source:'live',fetchedAt:new Date().toISOString(),servers:[]});
@@ -187,5 +188,18 @@ describe('connection stability',()=>{
     await connected();if(!stored.session)throw new Error('Missing session');
     await vi.advanceTimersByTimeAsync(72*3600000);inventoryFails=true;await message('refresh');
     expect(stored.connected).toBe(false);expect(proxyClear).toHaveBeenCalled();
+  });
+});
+describe('announcements',()=>{
+  const announcement={id:'5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f',level:'info',title:'Новая версия',body:'Обновите приложение.',linkUrl:null,notify:false,startsAt:new Date().toISOString(),endsAt:new Date(Date.now()+3600000).toISOString()};
+  it('loads them anonymously and hides one the user closed',async()=>{
+    const original=fetchMock.getMockImplementation();if(!original)throw new Error('Missing fixture');
+    fetchMock.mockImplementation(async(url,init)=>String(url).endsWith('/api/app/v1/config')?Response.json({ok:true,refreshAfterSeconds:900,announcements:[announcement]}):original(url,init));
+    await start();await message('get');await vi.advanceTimersByTimeAsync(0);
+    const config=fetchMock.mock.calls.find(([url])=>String(url).endsWith('/api/app/v1/config'));
+    expect(config?.[1]?.headers).toEqual({Accept:'application/json','X-Levik-Client':'extension/1.0.7'});
+    expect((await message('get')).state?.announcements?.map(item=>item.id)).toEqual([announcement.id]);
+    expect((await message('dismiss-announcement',{id:announcement.id})).state?.announcements).toEqual([]);
+    expect(fetchMock.mock.calls.filter(([url])=>String(url).endsWith('/api/app/v1/config'))).toHaveLength(1);
   });
 });

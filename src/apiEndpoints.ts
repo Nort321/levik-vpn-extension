@@ -7,6 +7,9 @@ export class ApiEndpoints {
 
   invalidate(): void { this.selected = null; this.verifiedUntil = 0; }
 
+  /** The site origin behind the selected extension API. */
+  async origin(): Promise<string> { return new URL(await this.resolve()).origin; }
+
   async resolve(): Promise<string> {
     if (this.selected && Date.now() < this.verifiedUntil) return this.selected;
     if (!this.pending) this.pending = this.probeWithRefresh().finally(() => { this.pending = null; });

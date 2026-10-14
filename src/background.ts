@@ -2,19 +2,25 @@ import {defaults,emptyTraffic,makePac,normalizeDomain,publicState,remaining,vali
 import {ApiEndpoints,fetchInventory} from './apiEndpoints';
 import {loadEndpoints,refreshEndpointsIfDue,websiteOrigins} from './serviceEndpoints';
 import {liveLocations,reconcileLocations} from './locations';
+import {dismiss,fetchRemoteConfig,isConfigDue,visibleAnnouncements,type RemoteConfig} from './remoteConfig';
 const endpoints = new ApiEndpoints();
 let state: State = {locations:[],preferences:{...defaults},session:null,connected:false,connectedAt:null,traffic:emptyTraffic(),trafficBaseline:null,error:null,trialUsed:false};
 let queue: Promise<unknown> = Promise.resolve();
 let pairingTimer:ReturnType<typeof setTimeout>|undefined;
 const attempts = new Map<string,number>();
+let remoteConfig:RemoteConfig|null=null,remoteConfigFailedAt:number|null=null,dismissedAnnouncements:string[]=[],remoteConfigLoading=false;
 const validBytes=(value:unknown):value is number=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0;
 function serial<T>(fn:()=>Promise<T>):Promise<T> {const next=queue.then(fn);queue=next.catch(()=>{});return next;}
 const ready=(async()=>{
   await chrome.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});
   // Signed hosts from the last run first, so a blocked domain is not even tried.
   await loadEndpoints();
-  const stored=await chrome.storage.local.get(['state']);
+  const stored=await chrome.storage.local.get(['state','remoteConfig','remoteConfigFailedAt','dismissedAnnouncements']);
   if(stored.state) state=stored.state as State; // Only the trusted worker writes this versioned local state.
+  const config=stored.remoteConfig as RemoteConfig|undefined;
+  if(config&&typeof config.fetchedAt==='number'&&typeof config.refreshAfterMs==='number'&&Array.isArray(config.announcements))remoteConfig=config;
+  if(typeof stored.remoteConfigFailedAt==='number')remoteConfigFailedAt=stored.remoteConfigFailedAt;
+  if(Array.isArray(stored.dismissedAnnouncements))dismissedAnnouncements=stored.dismissedAnnouncements.filter((id):id is string=>typeof id==='string');
   else state.preferences.language=chrome.i18n.getUILanguage().startsWith('ru')?'ru':'en';
   if(!validBytes(state.traffic?.uploadedBytes)||!validBytes(state.traffic?.downloadedBytes))state.traffic=emptyTraffic();
   if(!state.trafficBaseline||typeof state.trafficBaseline.epoch!=='string'||!validBytes(state.trafficBaseline.uploadedBytes)||!validBytes(state.trafficBaseline.downloadedBytes))state.trafficBaseline=null;
@@ -39,6 +45,16 @@ async function pollPairing(){
   await disconnect();state.session=session;state.pairing=null;
   state.trialUsed ||= session.plan==='trial';state.preferences.locationId=session.locations.find(l=>l.available)?.id??'';
   await persist();await refreshLocations();
+}
+/** Outside the serial queue: a slow config request must never delay connecting. */
+async function refreshRemoteConfig(){
+  if(remoteConfigLoading||!isConfigDue(remoteConfig,remoteConfigFailedAt))return;
+  remoteConfigLoading=true;
+  try{
+    remoteConfig=await fetchRemoteConfig(await endpoints.origin(),chrome.runtime.getManifest().version);remoteConfigFailedAt=null;
+    await chrome.storage.local.set({remoteConfig});await chrome.storage.local.remove('remoteConfigFailedAt');
+  }catch{remoteConfigFailedAt=Date.now();await chrome.storage.local.set({remoteConfigFailedAt});}
+  finally{remoteConfigLoading=false;}
 }
 async function persist(){await chrome.storage.local.set({state});await chrome.action.setBadgeText({text:state.connected?'ON':''});await chrome.action.setBadgeBackgroundColor({color:'#2182ff'});}
 function setting(operation:(callback:()=>void)=>void):Promise<void>{return new Promise((resolve,reject)=>operation(()=>chrome.runtime.lastError?reject(new Error('proxyConflict')):resolve()));}
@@ -162,10 +178,12 @@ async function handle(message:unknown){
       }finally{schedulePairingPoll();}
       break;
     }
+    case 'dismiss-announcement':if(typeof m.id!=='string')throw new Error('unknownError');dismissedAnnouncements=dismiss(dismissedAnnouncements,m.id);await chrome.storage.local.set({dismissedAnnouncements});break;
     case 'logout':try{await request('/logout',{});}finally{await disconnect();state.session=null;state.pairing=null;schedulePairingPoll();await persist();}break;
     default:throw new Error('unknownError');
   }
-  return publicState(state);
+  if(m.type==='get'||m.type==='refresh')void refreshRemoteConfig().catch(()=>{});
+  return {...publicState(state),announcements:visibleAnnouncements(remoteConfig,dismissedAnnouncements)};
 }
 chrome.runtime.onMessage.addListener((message:unknown,sender,respond)=>{
   if(sender.id!==chrome.runtime.id||!sender.url?.startsWith(chrome.runtime.getURL(''))||sender.tab?.url&&!sender.tab.url.startsWith(chrome.runtime.getURL('')))return false;
@@ -188,7 +206,7 @@ chrome.webRequest.onErrorOccurred.addListener(d=>attempts.delete(d.requestId),{u
 // other fatal proxy/configuration errors still surface a connection warning.
 chrome.proxy.onProxyError.addListener(details=>{if(details.fatal&&details.error!=='net::ERR_TUNNEL_CONNECTION_FAILED')void serial(async()=>{await ready;if(state.connected){await disconnect();state.error='connectionError';await persist();}});});
 chrome.proxy.settings.onChange.addListener(details=>{if(details.levelOfControl!=='controlled_by_this_extension')void serial(async()=>{await ready;if(state.connected){state.connected=false;state.connectedAt=null;state.traffic=emptyTraffic();state.trafficBaseline=null;state.error='proxyConflict';await persist();}});});
-chrome.alarms.onAlarm.addListener(()=>{void ready.then(()=>refreshEndpointsIfDue()).catch(()=>{});void serial(async()=>{
+chrome.alarms.onAlarm.addListener(()=>{void ready.then(()=>refreshEndpointsIfDue()).then(()=>refreshRemoteConfig()).catch(()=>{});void serial(async()=>{
   await ready;
   // The existing alarm also resumes polling if Chrome suspended the service worker.
   await pollPairingAutomatically();
