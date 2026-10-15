@@ -12,7 +12,7 @@ A more open internet, right from your browser. Levik VPN brings a clean, simple 
 - Full browser routing, or your own list of domains and subdomains.
 - Include selected sites or bypass them with smart routing.
 - A 72-hour free trial, without a payment card, subject to eligibility.
-- Sign-in through the leviknet.com personal cabinet and a clear access countdown.
+- Sign-in through the leviknet.org personal cabinet and a clear access countdown.
 - English and Russian, with instant language switching.
 - Optional WebRTC protection and startup connection.
 
