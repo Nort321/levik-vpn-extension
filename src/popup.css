@@ -6,3 +6,4 @@ footer{padding:9px 0}
 .flag{display:inline-flex;align-items:center;justify-content:center;background:none;font-size:28px;line-height:1}.server .flag{font-size:23px}.location-detail{min-height:42px}
 
 .pairing-home{max-height:490px;overflow:auto;scrollbar-width:thin}.pairing-card{padding:12px;margin-bottom:12px}.pairing-card p{margin:0;line-height:1.5}.pairing-card strong{color:#182641}
+.this-site{margin:12px 0 4px;padding:12px;border:1px solid #dceafb;border-radius:12px;background:#f0f6ff}.this-site>p:first-child{margin:0 0 9px}.this-site strong{display:block;overflow-wrap:anywhere}.this-site small{color:#77869d;font-size:10px}.this-site .hint{margin:9px 0 0}.pill.selected{background:#287ae1;color:#fff}

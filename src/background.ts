@@ -1,4 +1,4 @@
-import {defaults,emptyTraffic,makePac,normalizeDomain,publicState,remaining,validateEndpoint,type State,type Session,type Preferences,type TrafficTotal} from './model';
+import {defaults,emptyTraffic,makePac,normalizeDomain,parseAccountRules,publicState,remaining,validateEndpoint,type State,type Session,type Preferences,type TrafficTotal} from './model';
 import {ApiEndpoints,fetchInventory} from './apiEndpoints';
 import {loadEndpoints,refreshEndpointsIfDue,websiteOrigins} from './serviceEndpoints';
 import {liveLocations,reconcileLocations} from './locations';
@@ -70,12 +70,12 @@ function parseSession(value:unknown):Session {
   if(typeof v.token!=='string'||v.token.length<32||typeof v.label!=='string'||v.label.length>120||(v.plan!=='trial'&&v.plan!=='pro')||typeof v.expiresAt!=='number'||!Number.isFinite(v.expiresAt)||!Array.isArray(v.locations)||v.locations.length>500||typeof v.locationId!=='string'||typeof ep.host!=='string'||typeof ep.port!=='number'||typeof ep.username!=='string'||typeof ep.password!=='string')throw new Error('serviceError');
   const endpoint={host:ep.host,port:ep.port,username:ep.username,password:ep.password};validateEndpoint(endpoint);
   const locations=v.locations.map((item):Session['locations'][number]=>{const l=object(item);if(typeof l.id!=='string'||typeof l.country!=='string'||typeof l.city!=='string'||typeof l.flag!=='string'||!['europe','americas','asia','other'].includes(String(l.region))||typeof l.available!=='boolean'||!(l.latency===null||typeof l.latency==='number'&&Number.isFinite(l.latency)&&l.latency>=0))throw new Error('serviceError');if(l.region!=='europe'&&l.region!=='americas'&&l.region!=='asia'&&l.region!=='other')throw new Error('serviceError');return {id:l.id,country:l.country,city:l.city,flag:l.flag,region:l.region,available:l.available,latency:l.latency};});
-  return {token:v.token,label:v.label,plan:v.plan,expiresAt:v.expiresAt,endpoint,locationId:v.locationId,locations};
+  return {token:v.token,label:v.label,plan:v.plan,expiresAt:v.expiresAt,endpoint,locationId:v.locationId,locations,...(v.rules===undefined?{}:{rules:parseAccountRules(v.rules)})};
 }
-async function request(path:string,body?:unknown):Promise<unknown>{
+async function request(path:string,body?:unknown,errors:Readonly<Record<number,string>>={}):Promise<unknown>{
   let response:Response;
   try {const api=await endpoints.resolve();response=await fetch(`${api}${path}`,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...(state.session?{Authorization:`Bearer ${state.session.token}`}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(12000)});}catch{endpoints.invalidate();throw new Error('serviceError');}
-  if(!response.ok)throw new Error(response.status===401?'invalidCode':response.status===403?'needsAccount':response.status===409?'trialUnavailable':'serviceError');
+  if(!response.ok)throw new Error(errors[response.status]??(response.status===401?'invalidCode':response.status===403?'needsAccount':response.status===409?'trialUnavailable':'serviceError'));
   return response.json();
 }
 function parseTraffic(value:unknown):TrafficTotal {
@@ -95,7 +95,12 @@ async function refreshTraffic(){
 async function refreshSession(){
   if(!state.session)return;
   if(!remaining(state.session.expiresAt)){await disconnect();return;}
-  try{state.session=parseSession(await request('/session'));}
+  try{
+    const before=JSON.stringify(state.session.rules??null);
+    state.session=parseSession(await request('/session'));
+    // A rule set in the cabinet or another app reaches the open browser within a minute.
+    if(state.connected&&JSON.stringify(state.session.rules??null)!==before)await applyPac(state.session);
+  }
   catch(error){if(error instanceof Error&&error.message==='invalidCode'){await disconnect();state.session=null;}}
 }
 async function refreshLocations(){
@@ -124,8 +129,7 @@ async function connect(){
   if(state.session.locationId!==state.preferences.locationId)throw new Error('chooseAvailable');
   if(!remaining(state.session.expiresAt))throw new Error('needsAccount');
   if(!state.session.locations.some(l=>l.id===state.preferences.locationId&&l.available))throw new Error('chooseAvailable');
-  const config:chrome.proxy.ProxyConfig={mode:'pac_script',pacScript:{data:makePac(state.preferences,state.session.endpoint),mandatory:true}};
-  await setting(cb=>chrome.proxy.settings.set({value:config,scope:'regular'},cb));
+  await applyPac(state.session);
   try {
     if(state.preferences.webRtc)await setting(cb=>chrome.privacy.network.webRTCIPHandlingPolicy.set({value:'disable_non_proxied_udp',scope:'regular'},cb));
     else await setting(cb=>chrome.privacy.network.webRTCIPHandlingPolicy.clear({scope:'regular'},cb));
@@ -136,6 +140,23 @@ async function connect(){
     await fetch('https://example.com/',{mode:'no-cors',cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(12000)});
     state.connected=true;if(startsConnection){state.connectedAt=Date.now();state.traffic=emptyTraffic();state.trafficBaseline=baseline;}state.error=null;await persist();
   }catch(error){await disconnect();throw error;}
+}
+async function applyPac(session:Session){
+  const config:chrome.proxy.ProxyConfig={mode:'pac_script',pacScript:{data:makePac(state.preferences,session.endpoint,session.rules),mandatory:true}};
+  await setting(cb=>chrome.proxy.settings.set({value:config,scope:'regular'},cb));
+}
+/** "This site: through the VPN / directly", saved to the Levik account through the gateway. */
+async function rule(value:Record<string,unknown>){
+  const session=state.session;
+  if(!session?.rules)throw new Error('needsAccount');
+  if(typeof value.domain!=='string')throw new Error('invalidDomain');
+  const domain=normalizeDomain(value.domain);
+  const body=value.op==='remove'?{op:'remove_domain',domain}:value.action==='direct'||value.action==='proxy'?{op:'set_domain',domain,action:value.action}:null;
+  if(!body)throw new Error('unknownError');
+  const result=object(await request('/rules',body,{400:'invalidDomain',403:'needsAccount',409:'ruleLimit',429:'tooManyChanges'}));
+  session.rules=parseAccountRules(result.rules);
+  if(state.connected)await applyPac(session);
+  await persist();
 }
 async function preferences(value:unknown){
   const v=object(value), next:Preferences={...state.preferences};
@@ -161,6 +182,7 @@ async function handle(message:unknown){
     case 'stats':await refreshTraffic();break;
     case 'toggle':if(state.connected||state.error==='connectionError')await disconnect();else await connect();break;
     case 'preferences':await preferences(m.value);break;
+    case 'rule':await rule(m);break;
     case 'trial':case 'login':{
       if(m.consent!==true)throw new Error('consentRequired');
       const pairing=object(await request('/pair/start',{intent:m.type,consent:true,language:state.preferences.language}));
